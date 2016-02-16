@@ -1,47 +1,180 @@
-import tornado.web
+"""
+Beak
+
+The server for Bantam
+
+@category   Utility
+@version    $ID: 1.1.1, 2016-02-02 17:00:00 CST $;
+@author     KMR
+@licence    GNU GPL v.3
+"""
+
 import markdown
-import re, os
+import os, re
+import datetime
+import email.utils
+import stat
+import mimetypes
 
-class Beak(tornado.web.RequestHandler):
-    def initialize(self, config):
+from gevent.pywsgi import WSGIServer
+
+class Beak:
+    def __init__(self, config):
         self.conf = config
-        self.log = config['LOGGER']
+        self.log = config['logger']
 
-        self.words = config['WORDS'].replace('{dir}', config['BASE_PATH'])
-        self.pages = config['PAGES'].replace('{dir}', config['BASE_PATH'])
-        self.files = config['FILES'].replace('{dir}', config['BASE_PATH'])
-        self.errors = config['ERRORS'].replace('{dir}', config['BASE_PATH'])
+        self.words = config['words'].replace('{dir}', config['base_path'])
+        self.pages = config['pages'].replace('{dir}', config['base_path'])
+        self.files = config['files'].replace('{dir}', config['base_path'])
+        self.errors = config['errors'].replace('{dir}', config['base_path'])
+        self.theme = config['theme'].replace('{dir}', config['base_path'])
+        self.templates = config['templates'].replace('{dir}', config['base_path'])
 
-    def get(self, *args, **kwargs):
-        self.log.info('GET called with path ' + args[0])
-        path = args[0].strip('/')
-        is_file = re.search(r'\.', path)
-        
-        get_params = self.request.arguments
+    def serve(self):
+        self.log.info('Serve called')
+        server = WSGIServer((self.conf['HOST'], self.conf['PORT']), self.app)
+        server.serve_forever()
+
+    def app(self, env, sr):
+        body = None
+        self.headers = []
+        status = '200 OK'
+        if (env['REQUEST_METHOD'] == 'GET'):
+            body = self.get(env['PATH_INFO'], params = env['QUERY_STRING'])
+        else:
+            body = self.render(self.errors + '404.html')
+            status = '404 Not Found'
+
+        sr(status, self.headers)
+        return body
+
+    def get(self, path, **kwargs):
+        self.log.info('GET called with path ' + path)
+        path = path.strip('/') or 'index'
+        is_file = re.search(r'\.(?!htm)', path)
+        if kwargs['params']:
+            get_params = kwargs['params']
 
         if is_file:
-            if re.search(r'/\d{3}(?=.)', path) and re.match(r'errors', path):
+            if re.search(r'/\d{3}(?=.)', path) and re.match(r'^errors', path):
                 path = re.split(r'/', path)
-                try:
-                    self.render(self.errors + path[-1])
-                except:
-                    pass
+                path = self.errors + path[-1]
+            elif re.match(r'^theme', path):
+                path = re.split(r'/', path)
+                path = self.theme + path[-1]
             else:
-                self.render(self.files + path)
+                path = self.files + path
+
+            try:
+                self.log.info('Serving file with path ' + path)
+                return self.serve_file(path)
+            except Exception as e:
+                self.log.info('Failed to serve file: ' + e)
+                return self.render(self.errors + '404.html')
+
         else:
             self.log.info('Page requested')
+            path = path.strip('.html').strip('.htm')
+            self.headers = [('Content-Type', 'text/html')]
+            self.log.info('path')
             try:
-                if os.path.isfile(self.pages + path + '.html'):
-                    self.log.info('Page found, attempting to render')
-                    self.render(self.pages + path + '.html')
-                elif os.path.isfile(self.words + path + '.md'):
-                    self.log.info('Page not found, attempting to load from markdown')
-                    with open(self.words + path + '.md', 'r') as md_file, \
-                         open(self.pages + path + '.html', 'w', encoding='utf-8') as html_file:
-                        raw_md = md_file.read()
-                        html = markdown.markdown(raw_md)
-                        html_file.write(html)
-                        self.render(self.pages + path + '.html')
-            except:
-                self.render(self.errors + '404.html')
+                cont_path = self.words + path
+                if self.conf['use_templates']:
+                    cont_path = cont_path + '.json'
+                else:
+                    cont_path = cont_path + '.md'
+                html_path = self.pages + path + '.html'
 
+                changed = False
+                if os.path.isfile(html_path) and os.path.isfile(cont_path):
+                    stat_c = os.stat(cont_path)
+                    stat_h = os.stat(html_path)
+                    changed = stat_c[stat.ST_MTIME] < stat_h[stat.ST_MTIME]
+
+                if os.path.isfile(html_path) and not changed:
+                    self.log.info('Page found, attempting to render')
+                    return self.render(html_path)
+
+                elif os.path.isfile(cont_path):
+                    self.log.info('New or updated content found, attempting to load')
+                    with open(cont_path, 'r') as content, open(html_path, 'w', encoding='utf-8') as html_file:
+                        raw = content.read()
+                        if self.conf['use_template']:
+                            html = self.load_template(raw, path)
+                        else:
+                            html = markdown.markdown(raw)
+
+                        if self.conf['use_theme']:
+                            html = self.load_theme(html)
+                        html_file.write(html)
+                        return self.render(html_path)
+                else:
+                    return self.render(self.errors + '404.html')
+            except:
+                return self.render(self.errors + '404.html')
+
+    def render(self, path):
+        self.headers.append(('Content-Type', 'text/html'))
+        if os.path.isfile(path):
+            with open(path, 'r') as output:
+                return [bytes(output.read(), 'utf-8')]
+        else:
+            return self.render(self.errors + '404.html')
+
+    def serve_file(self, path, chunk=0):
+        if os.path.isfile(path):
+            stat_result = os.stat(path)
+            size = stat_result[stat.ST_SIZE]
+            self.set_file_headers(path, stat_result[stat.ST_MTIME])
+            entire_file = False
+            if (size < chunk):
+                chunk = size
+                entire_file = True
+            with open(path, 'rb') as output:
+                if chunk and not entire_file:
+                    yield output.read(chunk)
+                else:
+                    yield output.read()
+        else:
+            yield self.render(self.errors + '404.html')
+
+    def set_file_headers(self, path, modified):
+        self.headers.append(("Accept-Ranges", "bytes"))
+        if modified:
+            self.headers.append(("Last-Modified", modified))
+
+        content_type = self.get_content_type(path)
+        if content_type:
+            self.headers.append(("Content-Type", content_type))
+
+    def get_content_type(self, path):
+        mime_type, encoding = mimetypes.guess_type(path)
+        if encoding == "gzip":
+            return "application/gzip"
+        elif encoding is not None:
+            return "application/octet-stream"
+        elif mime_type is not None:
+            return mime_type
+        else:
+            # if mime_type not detected, use application/octet-stream
+            return "application/octet-stream"
+
+    def load_template(self, json, path):
+        path = re.sub('/\w*$', '', path)
+        if path and os.path.isfile(self.templates + path + '.m'):
+            path = self.templates + path + '.m'
+        elif os.path.isfile(self.templates + 'default.m'):
+            path = self.templates + 'default.m'
+        else:
+            return markdown.markdown(json['markdown'])
+
+        with open(path + '.m') as template:
+            html = template.read()
+        html.replace('{{words}}', markdown.markdown(json['markdown']))
+        return html
+
+    def load_theme(self, html):
+        if os.path.isfile(self.theme):
+            with open(self.theme) as theme:
+                html = theme.read().replace('{{body}}', html)
+        return html

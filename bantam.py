@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bantam
+Bantam app
 
 Bantam CMS, a lightweight CMS built on python around a process once mentality.
 
 @category   Utility
-@version    $ID: 1.1.1, 2015-07-17 17:00:00 CST $;
+@version    $ID: 1.1.1, 2016-02-02 17:00:00 CST $;
 @author     KMR
 @licence    GNU GPL v.3
 """
 
 import os, yaml
 import time, sys
-import tornado.web
-import tornado.ioloop
 from lib.daemon import daemon
 from lib import bantam
 
@@ -23,13 +21,12 @@ class BantamDaemon(daemon.Daemon):
         super(BantamDaemon, self).__init__(pidfile)
         DIR = os.path.dirname(os.path.realpath(__file__))
         self.conf = yaml.safe_load(open("{}/config/bantam.cfg".format(DIR)))
-        self.conf['BASE_PATH'] = DIR
+        self.conf['base_path'] = DIR
 
     def run(self):
-        engine = bantam.bantam(self.conf)
+        engine = bantam.Bantam(self.conf)
         app = engine.build()
-        app.listen(self.conf['PORT'])
-        tornado.ioloop.IOLoop.current().start()
+        app.serve()
 
 if __name__ == "__main__":
     daemon = BantamDaemon()
