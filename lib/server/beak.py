@@ -11,8 +11,7 @@ The server for Bantam
 
 import markdown
 import os, re
-import datetime
-import email.utils
+import json
 import stat
 import mimetypes
 
@@ -159,18 +158,25 @@ class Beak:
             # if mime_type not detected, use application/octet-stream
             return "application/octet-stream"
 
-    def load_template(self, json, path):
+    def load_template(self, raw, path):
         path = re.sub('/\w*$', '', path)
         if path and os.path.isfile(self.templates + path + '.m'):
             path = self.templates + path + '.m'
         elif os.path.isfile(self.templates + 'default.m'):
             path = self.templates + 'default.m'
         else:
-            return markdown.markdown(json['markdown'])
+            return markdown.markdown(raw)
 
         with open(path + '.m') as template:
             html = template.read()
-        html.replace('{{words}}', markdown.markdown(json['markdown']))
+        content = json.loads(raw)
+        for k, v in content.items():
+            if k == 'markdown':
+                html.replace('{{body}}', markdown.markdown(v))
+            else:
+                # Crazy multi {} results in {{key}}
+                html.replace('{{{{{}}}}}'.format(k), v)
+
         return html
 
     def load_theme(self, html):

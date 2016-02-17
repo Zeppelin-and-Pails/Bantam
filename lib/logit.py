@@ -33,12 +33,12 @@ class Logit:
         :param conf: the config object
         :return logit: a new instance of a logit
         """
-        self.max_lvl = conf['LOG_LEVEL']
+        self.max_lvl = conf['log_level']
         if self.max_lvl == 'Caveman':
             print('Caveman debug selected, printing everything')
         else:
             # setup the handler
-            log_file = conf['LOG_FILE'].replace('{dir}', conf['BASE_PATH'])
+            log_file = conf['LOG_FILE'].replace('{dir}', conf['base_path'])
             handler = logging.FileHandler(log_file)
 
             # set the logging level
